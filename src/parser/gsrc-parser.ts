@@ -23,6 +23,7 @@ export class GsrcParser {
     if (!inst) throw new Error('No instances in ADF');
     this.P = inst.payloadOffset;
     const graph = this.parseGraph(this.P);
+    this.resolveVariableNodeData(graph);
     const connections = this.extractConnections(graph);
     return { graph, connections, internalData: this.data.subarray(this.P, this.P + inst.payloadSize), adfVersion: this.adf.header.version, rawBuffer: this.adf.buffer };
   }
@@ -109,6 +110,107 @@ export class GsrcParser {
     } catch {}
     const hex = Array.from(d.value.subarray(0, Math.min(16, d.value.length))).map(b => b.toString(16).padStart(2, '0')).join(' ');
     return d.value.length > 16 ? `${hex}...` : hex;
+  }
+
+  /** Dereference Variable node fields through the global data blob.
+   *  Variable nodes store Name and Value as offsets into the global data.
+   *  - Name offset → uint32 hash (the variable's identity/name)
+   *  - Value offset → actual value (type depends on variable class)
+   */
+  private resolveVariableNodeData(graph: GSGraph): void {
+    const globalData = graph.data.value;
+    if (globalData.length === 0) return;
+    const gdv = new DataView(globalData.buffer, globalData.byteOffset, globalData.byteLength);
+
+    for (const node of graph.nodes) {
+      const cls = node._resolvedClass ?? '';
+      if (!/^(Variable|ExternalVariable|GlobalVariable)/.test(cls)) continue;
+
+      // Determine value type from class name
+      const varType = this.getVariableValueType(cls);
+
+      for (const d of node.dataSet.data) {
+        const fieldName = d._resolvedName ?? '';
+        if (d.value.length < 4) continue;
+        const dv = new DataView(d.value.buffer, d.value.byteOffset, d.value.byteLength);
+        const offset = dv.getUint32(0, this.le);
+
+        if (fieldName === 'Name') {
+          // Name field: offset → uint32 name hash in global data
+          if (offset + 4 <= globalData.length) {
+            const nameHash = gdv.getUint32(offset, this.le);
+            const resolved = resolveHash(nameHash);
+            d._displayValue = resolved;
+            d._resolvedType = 'uint32';
+          }
+        } else if (fieldName === 'Value' && d.reference) {
+          // Value field: offset → actual value in global data
+          if (offset < globalData.length) {
+            d._displayValue = this.fmtGlobalValue(gdv, offset, globalData.length, varType);
+          }
+        }
+      }
+    }
+  }
+
+  /** Get the expected value type from a variable class name */
+  private getVariableValueType(cls: string): string {
+    const base = cls.replace(/^(External|Global)/, '');
+    if (base.startsWith('VariableFloat')) return 'float';
+    if (base.startsWith('VariableInt')) return 'int';
+    if (base.startsWith('VariableBool')) return 'bool';
+    if (base.startsWith('VariableUint32')) return 'uint32';
+    if (base.startsWith('VariableUint64')) return 'uint64';
+    if (base === 'VariableString' || base === 'VariableStringHash') return 'string_hash';
+    if (base.startsWith('VariableVector')) return 'vector';
+    if (base.startsWith('VariableHash') || base === 'VariableStringHash') return 'string_hash';
+    if (base.startsWith('VariableEnum')) return 'enum';
+    if (base.startsWith('VariableTransform')) return 'vector';
+    if (base.startsWith('VariableEventSend') || base.startsWith('VariableEventReceive')) return 'event';
+    if (base.startsWith('VariableObject') || base.startsWith('VariableFile') || base.startsWith('VariableGraphFile') || base.startsWith('VariableGlobalRef')) return 'uint64';
+    return 'uint32';
+  }
+
+  /** Format a value read from the global data blob at a given offset */
+  private fmtGlobalValue(gdv: DataView, offset: number, len: number, varType: string): string {
+    try {
+      if (varType === 'float' && offset + 4 <= len) {
+        return gdv.getFloat32(offset, this.le).toFixed(4);
+      }
+      if (varType === 'int' && offset + 4 <= len) {
+        return gdv.getInt32(offset, this.le).toString();
+      }
+      if (varType === 'uint32' && offset + 4 <= len) {
+        const v = gdv.getUint32(offset, this.le);
+        const r = resolveHash(v);
+        return r.startsWith('0x') ? v.toString() : `${v} (${r})`;
+      }
+      if (varType === 'bool' && offset + 1 <= len) {
+        return gdv.getUint8(offset) ? 'true' : 'false';
+      }
+      if (varType === 'uint64' && offset + 8 <= len) {
+        return gdv.getBigUint64(offset, this.le).toString();
+      }
+      if (varType === 'enum' && offset + 4 <= len) {
+        return gdv.getInt32(offset, this.le).toString();
+      }
+      if (varType === 'string_hash' && offset + 4 <= len) {
+        const v = gdv.getUint32(offset, this.le);
+        const r = resolveHash(v);
+        return r;
+      }
+      if (varType === 'vector' && offset + 16 <= len) {
+        return `(${gdv.getFloat32(offset, this.le).toFixed(2)}, ${gdv.getFloat32(offset + 4, this.le).toFixed(2)}, ${gdv.getFloat32(offset + 8, this.le).toFixed(2)}, ${gdv.getFloat32(offset + 12, this.le).toFixed(2)})`;
+      }
+      if (varType === 'event') {
+        return '(event)';
+      }
+    } catch {}
+    // Fallback: show raw hex
+    if (offset + 4 <= len) {
+      return `0x${gdv.getUint32(offset, this.le).toString(16).padStart(8, '0').toUpperCase()}`;
+    }
+    return '??';
   }
 
   /** Resolve a connection value (offset into global data blob) to a target node index */
