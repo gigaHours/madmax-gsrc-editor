@@ -3,6 +3,7 @@ import { AdfReader } from './adf-reader';
 import { resolveHash, hashString } from '../utils/hash';
 
 const HASH_OUTPUT_PINS = hashString('output_pins');
+const HASH_VARIABLE_PINS = hashString('variable_pins');
 
 export class GsrcParser {
   private adf: AdfReader;
@@ -110,18 +111,49 @@ export class GsrcParser {
     return d.value.length > 16 ? `${hex}...` : hex;
   }
 
+  /** Resolve a connection value (offset into global data blob) to a target node index */
+  private resolveConnectionTarget(globalDataValue: Uint8Array, offset: number): number | null {
+    if (globalDataValue.length === 0 || offset + 4 > globalDataValue.length) return null;
+    const dv = new DataView(globalDataValue.buffer, globalDataValue.byteOffset, globalDataValue.byteLength);
+    return dv.getUint32(offset, this.le);
+  }
+
   extractConnections(graph: GSGraph): GSConnection[] {
     const conns: GSConnection[] = [];
+    const globalData = graph.data.value;
+
     for (let ni = 0; ni < graph.nodes.length; ni++) {
-      const outDS = graph.nodes[ni].dataSet.dataSets.find(ds => ds.name === HASH_OUTPUT_PINS);
-      if (!outDS) continue;
-      for (const pinDS of outDS.dataSets) {
-        for (const cd of pinDS.data) {
-          if (cd.value.length >= 4) {
-            const dv = new DataView(cd.value.buffer, cd.value.byteOffset, cd.value.byteLength);
-            const ti = dv.getUint32(0, this.le);
-            if (ti < graph.nodes.length) {
-              conns.push({ sourceNodeIndex: ni, sourceOutputPinHash: pinDS.name, targetNodeIndex: ti, targetInputPinHash: cd.name, _sourceOutputPin: resolveHash(pinDS.name), _targetInputPin: resolveHash(cd.name) });
+      const node = graph.nodes[ni];
+
+      // Extract connections from output_pins
+      const outDS = node.dataSet.dataSets.find(ds => ds.name === HASH_OUTPUT_PINS);
+      if (outDS) {
+        for (const pinDS of outDS.dataSets) {
+          for (const cd of pinDS.data) {
+            if (cd.value.length >= 4) {
+              const dv = new DataView(cd.value.buffer, cd.value.byteOffset, cd.value.byteLength);
+              const gdOffset = dv.getUint32(0, this.le);
+              const ti = this.resolveConnectionTarget(globalData, gdOffset);
+              if (ti !== null && ti < graph.nodes.length) {
+                conns.push({ sourceNodeIndex: ni, sourceOutputPinHash: pinDS.name, targetNodeIndex: ti, targetInputPinHash: cd.name, connectionType: 'flow', _sourceOutputPin: resolveHash(pinDS.name), _targetInputPin: resolveHash(cd.name) });
+              }
+            }
+          }
+        }
+      }
+
+      // Extract connections from variable_pins
+      const varDS = node.dataSet.dataSets.find(ds => ds.name === HASH_VARIABLE_PINS);
+      if (varDS) {
+        for (const pinDS of varDS.dataSets) {
+          for (const cd of pinDS.data) {
+            if (cd.value.length >= 4) {
+              const dv = new DataView(cd.value.buffer, cd.value.byteOffset, cd.value.byteLength);
+              const gdOffset = dv.getUint32(0, this.le);
+              const ti = this.resolveConnectionTarget(globalData, gdOffset);
+              if (ti !== null && ti < graph.nodes.length) {
+                conns.push({ sourceNodeIndex: ti, sourceOutputPinHash: pinDS.name, targetNodeIndex: ni, targetInputPinHash: pinDS.name, connectionType: 'variable', _sourceOutputPin: resolveHash(pinDS.name), _targetInputPin: resolveHash(pinDS.name) });
+              }
             }
           }
         }

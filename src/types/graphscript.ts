@@ -47,6 +47,7 @@ export interface GSConnection {
   sourceOutputPinHash: number;
   targetNodeIndex: number;
   targetInputPinHash: number;
+  connectionType: 'flow' | 'variable';
   // Resolved names
   _sourceOutputPin?: string;
   _targetInputPin?: string;

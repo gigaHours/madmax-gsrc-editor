@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   ReactFlow,
-  MiniMap,
   Controls,
   Background,
   BackgroundVariant,
@@ -107,18 +106,6 @@ export default function App() {
             border: '1px solid #333',
             borderRadius: 6,
           }}
-        />
-        <MiniMap
-          style={{
-            background: '#111',
-            border: '1px solid #333',
-            borderRadius: 6,
-          }}
-          nodeColor={(node) => {
-            const data = node.data as NodeData;
-            return data?.category?.color ?? '#888';
-          }}
-          maskColor="rgba(0,0,0,0.7)"
         />
 
         {/* Top toolbar */}
