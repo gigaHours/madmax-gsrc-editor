@@ -4,6 +4,8 @@
  * All names in GraphScript are stored as uint32 hashes of their string names.
  */
 
+import { HASHC_STRINGS } from './hashc-strings';
+
 export function jenkinsLookup3(key: string, initval: number = 0): number {
   const k = new TextEncoder().encode(key);
   const length = k.length;
@@ -254,13 +256,13 @@ const KNOWN_STRINGS = [
   'ExternalVariableFloat', 'ExternalVariableInt', 'ExternalVariableBool',
   'ExternalVariableString', 'ExternalVariableHash', 'ExternalVariableVector',
   'ExternalVariableObject', 'ExternalVariableUint32', 'ExternalVariableUint64',
-  'ExternalVariableTransform',
+  'ExternalVariableTransform', "ExternalVariableEventSend", "ExternalVariableEventReceive", "ExternalVariableGraphFile",  "ExternalVariableFile", "ExternalVariableGlobalRef",
   'GlobalVariableFloat', 'GlobalVariableInt', 'GlobalVariableBool',
   'GlobalVariableString', 'GlobalVariableHash', 'GlobalVariableVector',
   'GlobalVariableObject', 'GlobalVariableUint32', 'GlobalVariableUint64',
   'GlobalVariableTransform',
   // Flow control
-  'Start', 'Return', 'Entry', 'Exit',
+  'Start', 'Return', 'Entry', 'Exit', "Main", "Output", "Error", "ExternalGraph", "Selection", "Block", "Mulitlock",
   // Common variable/pin names
   'VariableStringHash', 'ExternalVariableStringHash', 'GlobalVariableStringHash',
   'update', 'destroy', 'on_spawn', 'on_despawn', 'result', 'value',
@@ -277,6 +279,12 @@ const KNOWN_STRINGS = [
 for (const s of KNOWN_STRINGS) {
   const h = hashString(s);
   KNOWN_HASHES[h] = s;
+}
+
+// Register all strings from pc_key.hashc (engine-wide hash dictionary)
+for (const s of HASHC_STRINGS) {
+  const h = hashString(s);
+  if (!(h in KNOWN_HASHES)) KNOWN_HASHES[h] = s;  // don't overwrite manual entries
 }
 
 /**

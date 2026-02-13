@@ -49,16 +49,18 @@ function extractParameters(ds: GSDataSet): GSData[] {
 
 /** Layered graph layout (Sugiyama-style) for left-to-right flow visualization.
  *  1. Topological sort + longest-path layer assignment (O(V+E), no re-visiting)
- *  2. Barycenter ordering to reduce crossings
- *  3. Variable nodes placed below their connected functional nodes
+ *  2. Layer compaction: promote nodes to reduce max layer height
+ *  3. Barycenter ordering to reduce crossings (8 sweep passes)
+ *  4. Variable nodes placed in a dedicated grid zone
  */
 function layoutNodes(
   nodeCount: number,
   connections: GSConnection[],
 ): Map<number, { x: number; y: number }> {
   const LAYER_GAP_X = 360;
-  const LAYER_GAP_Y = 200;
+  const LAYER_GAP_Y = 140;
   const NODE_W = 300;
+  const MAX_PER_LAYER = 4;  // max nodes per layer before splitting
 
   // Separate flow and variable connections
   const flowEdges = connections.filter(c => c.connectionType === 'flow');
@@ -86,9 +88,8 @@ function layoutNodes(
   }
 
   // --- Layer assignment via Kahn's topological sort (longest path, O(V+E)) ---
-  const layer = new Int32Array(nodeCount); // layer[i] = 0 initially
+  const layer = new Int32Array(nodeCount);
 
-  // Compute in-degree only among funcNodes
   const funcInDeg = new Int32Array(nodeCount);
   for (const n of funcNodes) {
     for (const p of parents[n]) {
@@ -96,7 +97,6 @@ function layoutNodes(
     }
   }
 
-  // Queue starts with all functional nodes with 0 in-degree
   const queue: number[] = [];
   for (const n of funcNodes) {
     if (funcInDeg[n] === 0) {
@@ -105,13 +105,11 @@ function layoutNodes(
     }
   }
 
-  // Process in topological order, assigning longest-path layer
   let head = 0;
   while (head < queue.length) {
     const cur = queue[head++];
     for (const child of children[cur]) {
       if (!funcNodes.has(child)) continue;
-      // Longest path: child layer = max of all parent layers + 1
       const newLayer = layer[cur] + 1;
       if (newLayer > layer[child]) layer[child] = newLayer;
       funcInDeg[child]--;
@@ -121,11 +119,24 @@ function layoutNodes(
     }
   }
 
-  // Handle cycles: any funcNode not in queue gets assigned layer 0
-  // (they are in a cycle - place at start)
+  // --- Layer compaction: promote nodes to earliest valid layer ---
+  // Longest-path pushes nodes as far right as possible.
+  // Compact by moving each node to the minimum layer where it's still
+  // after all its parents (min layer = max parent layer + 1).
+  // Process in topological order (queue is already sorted).
+  for (const n of queue) {
+    let minLayer = 0;
+    for (const p of parents[n]) {
+      if (funcNodes.has(p)) {
+        const pl = layer[p] + 1;
+        if (pl > minLayer) minLayer = pl;
+      }
+    }
+    layer[n] = minLayer;
+  }
 
   // --- Group functional nodes by layer ---
-  const layerGroups = new Map<number, number[]>();
+  let layerGroups = new Map<number, number[]>();
   let maxLayer = 0;
   for (const n of funcNodes) {
     const l = layer[n];
@@ -135,6 +146,44 @@ function layoutNodes(
     group.push(n);
   }
 
+  // --- Split oversized layers: push excess nodes to sub-layers ---
+  // If a layer has more than MAX_PER_LAYER nodes, split it into multiple
+  // adjacent layers, shifting all downstream layers right.
+  {
+    const sortedLayers = [...layerGroups.keys()].sort((a, b) => b - a); // process right-to-left
+    for (const l of sortedLayers) {
+      const nodes = layerGroups.get(l)!;
+      if (nodes.length <= MAX_PER_LAYER) continue;
+
+      // Split into chunks
+      const chunks: number[][] = [];
+      for (let i = 0; i < nodes.length; i += MAX_PER_LAYER) {
+        chunks.push(nodes.slice(i, i + MAX_PER_LAYER));
+      }
+      const extraLayers = chunks.length - 1;
+      if (extraLayers === 0) continue;
+
+      // Shift all layers > l to the right by extraLayers
+      const newGroups = new Map<number, number[]>();
+      for (const [gl, gn] of layerGroups) {
+        if (gl > l) {
+          newGroups.set(gl + extraLayers, gn);
+          for (const n of gn) layer[n] = gl + extraLayers;
+        } else if (gl === l) {
+          // Replace with chunks
+          for (let ci = 0; ci < chunks.length; ci++) {
+            newGroups.set(l + ci, chunks[ci]);
+            for (const n of chunks[ci]) layer[n] = l + ci;
+          }
+        } else {
+          newGroups.set(gl, gn);
+        }
+      }
+      layerGroups = newGroups;
+      maxLayer += extraLayers;
+    }
+  }
+
   // --- Barycenter ordering to reduce edge crossings ---
   const nodeOrder = new Map<number, number>();
   for (const [, nodes] of layerGroups) {
@@ -142,8 +191,8 @@ function layoutNodes(
     nodes.forEach((n, i) => nodeOrder.set(n, i));
   }
 
-  // 4 sweep passes (forward/backward)
-  for (let pass = 0; pass < 4; pass++) {
+  // 8 sweep passes for better convergence
+  for (let pass = 0; pass < 8; pass++) {
     const forward = pass % 2 === 0;
     for (let l = forward ? 1 : maxLayer - 1; forward ? l <= maxLayer : l >= 0; forward ? l++ : l--) {
       const nodes = layerGroups.get(l);
@@ -152,10 +201,9 @@ function layoutNodes(
       const bary = new Map<number, number>();
       for (const n of nodes) {
         const adj = forward ? parents[n] : children[n];
-        const targetLayer = forward ? l - 1 : l + 1;
         let sum = 0, count = 0;
         for (const a of adj) {
-          if (funcNodes.has(a) && layer[a] === targetLayer) {
+          if (funcNodes.has(a)) {
             sum += nodeOrder.get(a) ?? 0;
             count++;
           }
@@ -180,49 +228,58 @@ function layoutNodes(
     }
   }
 
-  // --- Place variable nodes below their targets ---
-  const varTargets = new Map<number, Set<number>>();
-  for (const e of varEdges) {
-    let set = varTargets.get(e.sourceNodeIndex);
-    if (!set) { set = new Set(); varTargets.set(e.sourceNodeIndex, set); }
-    set.add(e.targetNodeIndex);
-  }
+  // --- Place variable nodes in a dedicated grid zone below the graph ---
+  const VAR_CELL_W = 240;   // width per variable node cell
+  const VAR_CELL_H = 100;   // height per variable node cell
+  const VAR_COLS = 6;        // max columns in the variable grid
+  const VAR_ZONE_GAP = 160;  // gap between functional graph and variable zone
 
-  // Global bottom Y
+  // Global bottom Y of functional nodes
   let globalBottomY = -Infinity;
+  let globalMinX = Infinity;
   for (const [, pos] of positions) {
     if (pos.y > globalBottomY) globalBottomY = pos.y;
+    if (pos.x < globalMinX) globalMinX = pos.x;
   }
   if (globalBottomY === -Infinity) globalBottomY = 0;
+  if (globalMinX === Infinity) globalMinX = 0;
 
-  const varBaseY = globalBottomY + LAYER_GAP_Y + 40;
-  let varCol = 0;
-  for (const [vn, targets] of varTargets) {
-    let sumX = 0, count = 0;
-    for (const t of targets) {
-      const p = positions.get(t);
-      if (p) { sumX += p.x; count++; }
-    }
-    positions.set(vn, {
-      x: count > 0 ? sumX / count : varCol * NODE_W,
-      y: varBaseY + varCol * 30, // slight stagger to avoid overlap
-    });
-    varCol++;
+  const varBaseY = globalBottomY + VAR_ZONE_GAP;
+  const varBaseX = globalMinX;
+
+  // Collect all variable nodes (connected first, then unconnected)
+  const allVarNodes: number[] = [];
+  const varConnected = new Set<number>();
+  for (const e of varEdges) {
+    varConnected.add(e.sourceNodeIndex);
+  }
+  // Connected variable nodes first (sorted by index for stability)
+  for (const vn of [...varConnected].sort((a, b) => a - b)) {
+    allVarNodes.push(vn);
+  }
+  // Unconnected variable nodes after
+  for (const vn of [...varNodes].sort((a, b) => a - b)) {
+    if (!varConnected.has(vn)) allVarNodes.push(vn);
   }
 
-  // Variable nodes without outgoing connections
-  for (const vn of varNodes) {
-    if (!positions.has(vn)) {
-      positions.set(vn, { x: varCol * NODE_W, y: varBaseY });
-      varCol++;
-    }
+  // Place in grid
+  for (let i = 0; i < allVarNodes.length; i++) {
+    const col = i % VAR_COLS;
+    const row = Math.floor(i / VAR_COLS);
+    positions.set(allVarNodes[i], {
+      x: varBaseX + col * VAR_CELL_W,
+      y: varBaseY + row * VAR_CELL_H,
+    });
   }
 
   // Any remaining unpositioned nodes
+  const remainingBaseY = allVarNodes.length > 0
+    ? varBaseY + (Math.floor((allVarNodes.length - 1) / VAR_COLS) + 1) * VAR_CELL_H + VAR_ZONE_GAP
+    : varBaseY + VAR_ZONE_GAP;
   let extraCol = 0;
   for (let i = 0; i < nodeCount; i++) {
     if (!positions.has(i)) {
-      positions.set(i, { x: extraCol * NODE_W, y: varBaseY + LAYER_GAP_Y });
+      positions.set(i, { x: globalMinX + extraCol * NODE_W, y: remainingBaseY });
       extraCol++;
     }
   }

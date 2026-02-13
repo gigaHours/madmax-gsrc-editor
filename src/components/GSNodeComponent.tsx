@@ -36,6 +36,12 @@ const OUT_LABEL_STYLE: React.CSSProperties = { color: '#DCDCAA', fontSize: 10 };
 const VAR_ROW_STYLE: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 10px', position: 'relative' };
 const VAR_LABEL_STYLE: React.CSSProperties = { color: '#4EC9B0', fontSize: 10 };
 const VAR_OUT_WRAP: React.CSSProperties = { position: 'relative', minHeight: 10 };
+const VAR_VALUE_STYLE: React.CSSProperties = {
+  padding: '4px 10px', fontSize: 11, color: '#4EC9B0', fontWeight: 600,
+  display: 'flex', alignItems: 'center', gap: 6,
+};
+const VAR_VALUE_NAME_STYLE: React.CSSProperties = { color: '#9CDCFE', fontSize: 9, fontWeight: 400 };
+const VAR_VALUE_VAL_STYLE: React.CSSProperties = { color: '#CE9178', fontSize: 11, fontWeight: 600, marginLeft: 'auto', maxWidth: 160, textAlign: 'right' as const, wordBreak: 'break-all' as const };
 const PINS_WRAP: React.CSSProperties = { padding: '4px 0' };
 const PARAM_NAME_STYLE: React.CSSProperties = { color: '#9CDCFE', fontSize: 10, whiteSpace: 'nowrap' };
 const PARAM_VAL_STYLE: React.CSSProperties = { color: '#CE9178', fontSize: 10, textAlign: 'right', wordBreak: 'break-all', maxWidth: 150 };
@@ -149,8 +155,20 @@ const GSNodeComponent = memo(({ data, selected }: NodeProps & { data: NodeData }
         )}
       </div>
 
+      {/* Variable node: always show value inline */}
+      {isVariableNode && data.parameters.length > 0 && (
+        <div style={{ borderTop: `1px solid ${cat.borderColor}33`, padding: '2px 0' }}>
+          {data.parameters.map((param, pi) => (
+            <div key={pi} style={VAR_VALUE_STYLE}>
+              <span style={VAR_VALUE_NAME_STYLE}>{param._resolvedName ?? '??'}</span>
+              <span style={VAR_VALUE_VAL_STYLE}>{param._displayValue ?? '??'}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Parameters (only when expanded) */}
-      {expanded && data.parameters.length > 0 && (
+      {!isVariableNode && expanded && data.parameters.length > 0 && (
         <div style={paramContainerStyle}>
           <div style={PARAM_HEADER_STYLE}>Parameters</div>
           {data.parameters.map((param, pi) => (
